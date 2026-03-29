@@ -1,7 +1,6 @@
 openai
 gradio
 mcp[cli]
-youtube-transcript-api
-httpx>=0.27
+requests
 python-dotenv
 uvicorn

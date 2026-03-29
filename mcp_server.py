@@ -1,12 +1,12 @@
 from mcp.server.fastmcp import FastMCP
 import os, dotenv
-import httpx
+import requests
 
 dotenv.load_dotenv()
 
 mcp = FastMCP("tools")
 
-_HTTP_TIMEOUT = httpx.Timeout(15.0)
+_HTTP_TIMEOUT = 15
 
 
 @mcp.tool()
@@ -15,21 +15,27 @@ def get_transcript(url: str) -> str:
     api_key = os.getenv("SUPADATA_API_KEY")
     if not api_key:
         raise ValueError("SUPADATA_API_KEY is not set")
-    response = httpx.get(
-        "https://api.supadata.com/v1/youtube/transcript",
-        params={"url": url, "text": True},
-        headers={"x-api-key": api_key},
-        timeout=_HTTP_TIMEOUT,
-    )
-    data = response.json()
-    if not response.is_success or "content" not in data:
-        return f"Transcript error : {data}"
+    try:
+        response = requests.get(
+            "https://api.supadata.com/v1/youtube/transcript",
+            params={"url": url.strip(), "text": True},
+            headers={"x-api-key": api_key},
+            timeout=_HTTP_TIMEOUT,
+        )
+    except requests.RequestException as e:
+        return f"Supadata request failed: {e}"
+    try:
+        data = response.json()
+    except Exception:
+        return f"Supadata error (non-JSON body, HTTP {response.status_code})"
+    if not response.ok or "content" not in data:
+        return f"Transcript error: {data}"
     raw = data["content"]
     if isinstance(raw, list):
-        text = " ".join([item["text"].replace("\n", " ") for item in raw])
+        text = " ".join(item["text"].replace("\n", " ") for item in raw)
     else:
-        text = raw.replace("\n", " ")
-    return text[:6000]
+        text = str(raw).replace("\n", " ")
+    return text[:6000] if text.strip() else "Empty transcript content from Supadata."
 
 
 @mcp.tool()
@@ -45,7 +51,7 @@ def calculate(expression: str) -> str:
 @mcp.tool()
 def get_weather(city: str) -> str:
     """Get weather information for a city"""
-    geo = httpx.get(
+    geo = requests.get(
         "https://geocoding-api.open-meteo.com/v1/search",
         params={"name": city, "count": 1},
         timeout=_HTTP_TIMEOUT,
@@ -55,7 +61,7 @@ def get_weather(city: str) -> str:
     lat = geo["results"][0]["latitude"]
     lon = geo["results"][0]["longitude"]
     name = geo["results"][0]["name"]
-    weather = httpx.get(
+    weather = requests.get(
         "https://api.open-meteo.com/v1/forecast",
         params={
             "latitude": lat,
