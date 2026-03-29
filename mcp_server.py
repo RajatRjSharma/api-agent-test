@@ -1,4 +1,5 @@
 import logging
+import time
 from mcp.server.fastmcp import FastMCP
 import os, dotenv
 import requests
@@ -18,30 +19,87 @@ logger = logging.getLogger(__name__)
 mcp = FastMCP("tools")
 
 _HTTP_TIMEOUT = 15
-# Docs: POST https://api.supadata.ai/v1/transcript with JSON body (not the old .com GET endpoint).
-_SUPADATA_URL = "https://api.supadata.ai/v1/transcript"
+# Official API: GET https://api.supadata.ai/v1/transcript?url=...&text=true (not POST — POST returns 404).
+_SUPADATA_BASE = "https://api.supadata.ai/v1"
 _LOG_BODY_MAX = 12000
+
+
+def _format_transcript_content(raw) -> str:
+    if raw is None:
+        return ""
+    if isinstance(raw, str):
+        return raw.replace("\n", " ").strip()
+    if isinstance(raw, list):
+        parts = []
+        for item in raw:
+            if isinstance(item, dict) and "text" in item:
+                parts.append(item["text"].replace("\n", " "))
+            else:
+                parts.append(str(item).replace("\n", " "))
+        return " ".join(parts).strip()
+    return str(raw).replace("\n", " ").strip()
+
+
+def _poll_transcript_job(api_key: str, job_id: str) -> tuple[str | None, str | None]:
+    """Poll GET /v1/transcript/{jobId} until completed, failed, or timeout."""
+    max_sec = int(os.getenv("SUPADATA_JOB_TIMEOUT_SEC") or "120")
+    interval = float(os.getenv("SUPADATA_JOB_POLL_SEC") or "2")
+    poll_url = f"{_SUPADATA_BASE}/transcript/{job_id}"
+    headers = {"x-api-key": api_key}
+    deadline = time.time() + max_sec
+    while time.time() < deadline:
+        try:
+            r = requests.get(poll_url, headers=headers, timeout=_HTTP_TIMEOUT)
+        except requests.RequestException as e:
+            logger.exception("Supadata job poll request failed job_id=%s", job_id)
+            return None, f"Job poll request failed: {e}"
+        try:
+            data = r.json()
+        except Exception:
+            logger.error(
+                "Job poll non-JSON HTTP %s body=%s",
+                r.status_code,
+                (r.text or "")[:2000],
+            )
+            return None, f"Job poll non-JSON (HTTP {r.status_code})"
+        if not r.ok:
+            return None, f"Job poll HTTP {r.status_code}: {data}"
+        status = data.get("status")
+        if status == "completed":
+            text = _format_transcript_content(data.get("content"))
+            if text:
+                return text[:6000], None
+            return None, "Job completed but transcript content was empty"
+        if status == "failed":
+            err = data.get("error")
+            return None, f"Transcript job failed: {err}"
+        if status in ("queued", "active", None):
+            time.sleep(interval)
+            continue
+        return None, f"Unknown job status {status!r}: {data}"
+    return None, f"Transcript job timed out after {max_sec}s (job_id={job_id})"
 
 
 @mcp.tool()
 def get_transcript(url: str) -> str:
-    """Get Youtube video transcript via Supadata API"""
+    """Get Youtube video transcript via Supadata API (GET /v1/transcript per docs)."""
     api_key = os.getenv("SUPADATA_API_KEY")
     if not api_key:
         logger.error("get_transcript: SUPADATA_API_KEY is not set")
         raise ValueError("SUPADATA_API_KEY is not set")
-    payload = {"url": url.strip(), "text": True}
+    params = {
+        "url": url.strip(),
+        "text": "true",
+        "mode": (os.getenv("SUPADATA_MODE") or "auto").strip() or "auto",
+    }
     lang = (os.getenv("SUPADATA_LANG") or "").strip()
     if lang:
-        payload["lang"] = lang
+        params["lang"] = lang
     try:
-        response = requests.post(
-            _SUPADATA_URL,
-            headers={
-                "x-api-key": api_key,
-                "Content-Type": "application/json",
-            },
-            json=payload,
+        response = requests.get(
+            f"{_SUPADATA_BASE}/transcript",
+            params=params,
+            headers={"x-api-key": api_key},
             timeout=_HTTP_TIMEOUT,
         )
     except requests.RequestException as e:
@@ -63,25 +121,34 @@ def get_transcript(url: str) -> str:
             body,
         )
         return f"Supadata error (non-JSON body, HTTP {response.status_code})"
-    if not response.ok or "content" not in data:
+    if not response.ok:
         logger.error(
-            "Supadata API error HTTP %s ok=%s data=%r",
+            "Supadata API error HTTP %s data=%r",
             response.status_code,
-            response.ok,
             data,
         )
         return f"Transcript error: {data}"
-    raw = data["content"]
-    if isinstance(raw, list):
-        text = " ".join(item["text"].replace("\n", " ") for item in raw)
-    else:
-        text = str(raw).replace("\n", " ")
-    text = text.strip()
-    if not text:
-        logger.warning("Supadata returned empty transcript content")
-        return "Empty transcript content from Supadata."
-    logger.info("get_transcript ok length=%s name=%r", len(text), data.get("name"))
-    return text[:6000]
+
+    if "content" in data:
+        text = _format_transcript_content(data["content"])
+        if text:
+            logger.info("get_transcript ok length=%s lang=%r", len(text), data.get("lang"))
+            return text[:6000]
+        if not data.get("jobId"):
+            logger.warning("Supadata returned empty content (sync)")
+            return "Empty transcript content from Supadata."
+
+    if data.get("jobId"):
+        logger.info("Supadata async job jobId=%s — polling for result", data["jobId"])
+        text, err = _poll_transcript_job(api_key, data["jobId"])
+        if text:
+            logger.info("get_transcript ok (async) length=%s", len(text))
+            return text
+        logger.error("Supadata async job failed: %s", err)
+        return err or "Transcript job failed."
+
+    logger.error("Supadata unexpected JSON: %r", data)
+    return f"Transcript error (unexpected response): {data}"
 
 
 @mcp.tool()
