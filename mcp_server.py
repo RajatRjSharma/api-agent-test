@@ -66,20 +66,18 @@ def get_weather(city: str) -> str:
         params={
             "latitude": lat,
             "longitude": lon,
-            "current": "temperature_2m",
-            "hourly": "temperature_2m",
+            "current": "temperature_2m,wind_speed_10m",
         },
         timeout=_HTTP_TIMEOUT,
     ).json()
-    if (
-        not weather
-        or "current" not in weather
-        or "temperature_2m" not in weather["current"]
-    ):
+    cur = weather.get("current") or {}
+    if "temperature_2m" not in cur:
         return f"No weather data found for {city}"
-    temperature = weather["current"]["temperature_2m"]
-    wind = weather["current"]["windspeed"]
-    return f"{name} : {temperature}°C, wind {wind} km/h"
+    temperature = cur["temperature_2m"]
+    wind = cur.get("wind_speed_10m")
+    if wind is not None:
+        return f"{name} : {temperature}°C, wind {wind} km/h"
+    return f"{name} : {temperature}°C"
 
 
 if __name__ == "__main__":
