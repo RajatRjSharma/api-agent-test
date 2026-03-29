@@ -1,9 +1,12 @@
 from mcp.server.fastmcp import FastMCP
-import requests, os, dotenv
+import os, dotenv
+import httpx
 
 dotenv.load_dotenv()
 
 mcp = FastMCP("tools")
+
+_HTTP_TIMEOUT = httpx.Timeout(15.0)
 
 
 @mcp.tool()
@@ -12,14 +15,14 @@ def get_transcript(url: str) -> str:
     api_key = os.getenv("SUPADATA_API_KEY")
     if not api_key:
         raise ValueError("SUPADATA_API_KEY is not set")
-    response = requests.get(
-        f"https://api.supadata.com/v1/youtube/transcript",
+    response = httpx.get(
+        "https://api.supadata.com/v1/youtube/transcript",
         params={"url": url, "text": True},
         headers={"x-api-key": api_key},
-        timeout=15,
+        timeout=_HTTP_TIMEOUT,
     )
     data = response.json()
-    if not response.ok or "content" not in data:
+    if not response.is_success or "content" not in data:
         return f"Transcript error : {data}"
     raw = data["content"]
     if isinstance(raw, list):
@@ -42,17 +45,17 @@ def calculate(expression: str) -> str:
 @mcp.tool()
 def get_weather(city: str) -> str:
     """Get weather information for a city"""
-    geo = requests.get(
+    geo = httpx.get(
         "https://geocoding-api.open-meteo.com/v1/search",
         params={"name": city, "count": 1},
-        timeout=15,
+        timeout=_HTTP_TIMEOUT,
     ).json()
     if not geo or "results" not in geo or not geo["results"]:
         return f"No weather data found for {city}"
     lat = geo["results"][0]["latitude"]
     lon = geo["results"][0]["longitude"]
     name = geo["results"][0]["name"]
-    weather = requests.get(
+    weather = httpx.get(
         "https://api.open-meteo.com/v1/forecast",
         params={
             "latitude": lat,
@@ -60,7 +63,7 @@ def get_weather(city: str) -> str:
             "current": "temperature_2m",
             "hourly": "temperature_2m",
         },
-        timeout=15,
+        timeout=_HTTP_TIMEOUT,
     ).json()
     if (
         not weather
