@@ -3,3 +3,5 @@ gradio
 mcp[cli]
 youtube-transcript-api
 requests
+python-dotenv
+uvicorn

@@ -1,7 +1,9 @@
 import os, json, dotenv
 import gradio as gr
+from fastapi import FastAPI
 from openai import OpenAI
 from mcp_server import get_transcript, calculate, get_weather
+import uvicorn
 
 
 dotenv.load_dotenv()
@@ -101,7 +103,7 @@ def run(url, query):
             )
 
 
-with gr.Blocks(title="AI Assistant") as app:
+with gr.Blocks(title="AI Assistant") as demo:
     gr.Markdown("## AI Assistant - video . math . weather")
     url = gr.Textbox(
         label="Youtube URL (optional)",
@@ -116,4 +118,15 @@ with gr.Blocks(title="AI Assistant") as app:
         fn=run, inputs=[url, qry], outputs=gr.Textbox(label="Answer", lines=10)
     )
 
-app.launch(server_name="0.0.0.0", server_port=int(os.getenv("PORT", 7860)))
+# Vercel (and other ASGI hosts) expect a top-level ASGI `app`.
+_fastapi = FastAPI()
+app = gr.mount_gradio_app(_fastapi, demo, path="/")
+
+if __name__ == "__main__":
+
+
+    uvicorn.run(
+        app,
+        host="0.0.0.0",
+        port=int(os.getenv("PORT", "7860")),
+    )
